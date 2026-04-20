@@ -1,0 +1,23 @@
+{
+  "app_id": "example-app",
+  "display_name": "Example App",
+  "owner": {
+    "name": "Example Team",
+    "email": "security@example.com",
+    "url": "https://example.com"
+  },
+  "status": "active",
+  "signing_keys": [
+    {
+      "kid": "example-key-1",
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "alg": "EdDSA",
+      "x": "11qYAYLef5u3yR0k9R6iW6f4f6LQY2hJxGm4Xf7Lh8Q",
+      "status": "active",
+      "created_at": "2026-04-16T00:00:00Z"
+    }
+  ],
+  "created_at": "2026-04-16T00:00:00Z",
+  "updated_at": "2026-04-16T00:00:00Z"
+}

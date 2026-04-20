@@ -1,0 +1,23 @@
+{
+  "app_id": "podverse",
+  "display_name": "Podverse",
+  "owner": {
+    "name": "Mitch Downey",
+    "email": "contact@podverse.fm",
+    "url": "https://podverse.fm"
+  },
+  "status": "active",
+  "signing_keys": [
+    {
+      "kid": "podverse-key-1",
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "alg": "EdDSA",
+      "x": "bw8dMki8MRdPvei24uWYnouMk8eV8yOXnwv1CskZzhc",
+      "status": "active",
+      "created_at": "2026-04-17T01:29:58Z"
+    }
+  ],
+  "created_at": "2026-04-17T01:29:58Z",
+  "updated_at": "2026-04-17T01:29:58Z"
+}
