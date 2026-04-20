@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entrypoint for the English interactive app-record helper (scripts/en/registry-app).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$ROOT/en/registry-app"

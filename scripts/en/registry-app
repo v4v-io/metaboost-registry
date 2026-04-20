@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""
+English UI: create or update registry/apps/<app_id>.app.json with standardized Ed25519 key material.
+
+Update mode: press Enter at a prompt to keep the existing value. Optional owner.url can be
+removed by typing a single hyphen (-).
+
+Environment:
+  OPENSSL_BIN   Path to openssl (default: openssl). Use Homebrew OpenSSL 3 on macOS if needed.
+
+Run ./scripts/registry-app from the root of your fork.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+APP_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
+APP_STATUSES = ("active", "suspended", "revoked")
+
+
+def repo_root_from_script() -> Path:
+    """Resolve repo root whether this file lives at scripts/registry-app or scripts/en/registry-app."""
+    here = Path(__file__).resolve().parent
+    for d in [here, *here.parents]:
+        if (d / "schema" / "app-record.schema.json").is_file():
+            return d
+    sys.exit(
+        "Could not locate metaboost-registry root (expected schema/app-record.schema.json "
+        "in a parent of this script). Run ./scripts/registry-app from inside your fork."
+    )
+
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def openssl_bin() -> str:
+    return os.environ.get("OPENSSL_BIN", "openssl")
+
+
+def check_openssl_ed25519(openssl: str) -> None:
+    try:
+        r = subprocess.run(
+            [openssl, "list", "-public-key-algorithms"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        if "ed25519" in out.lower():
+            return
+    except OSError:
+        pass
+    print(
+        f"Warning: '{openssl}' may not support Ed25519. If key generation fails, install "
+        "OpenSSL 1.1.1+ or 3.x and set OPENSSL_BIN (e.g. Homebrew openssl@3 on macOS).",
+        file=sys.stderr,
+    )
+
+
+def derive_x(openssl: str, private_pem: Path) -> str:
+    r = subprocess.run(
+        [openssl, "pkey", "-in", str(private_pem), "-pubout", "-outform", "DER"],
+        check=True,
+        capture_output=True,
+    )
+    raw = r.stdout[-32:]
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def generate_keypair(openssl: str, private_out: Path, public_out: Path) -> None:
+    private_out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [openssl, "genpkey", "-algorithm", "ed25519", "-out", str(private_out)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            openssl,
+            "pkey",
+            "-in",
+            str(private_out),
+            "-pubout",
+            "-out",
+            str(public_out),
+        ],
+        check=True,
+    )
+    os.chmod(private_out, 0o600)
+
+
+def keys_dir() -> Path:
+    return Path.home() / ".config" / "metaboost-registry" / "keys"
+
+
+def private_key_path(app_id: str, key_index: int) -> Path:
+    kd = keys_dir()
+    if key_index == 0:
+        return kd / f"{app_id}-ed25519-private.pem"
+    return kd / f"{app_id}-ed25519-{key_index}-private.pem"
+
+
+def public_key_path(app_id: str, key_index: int) -> Path:
+    kd = keys_dir()
+    if key_index == 0:
+        return kd / f"{app_id}-ed25519-public.pem"
+    return kd / f"{app_id}-ed25519-{key_index}-public.pem"
+
+
+def validate_app_id(app_id: str) -> None:
+    if not APP_ID_PATTERN.match(app_id):
+        sys.exit(
+            "app_id must match ^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$ "
+            "(lowercase letters, digits, hyphens; 3–64 chars)."
+        )
+
+
+def prompt_line(
+    label: str,
+    default: str | None,
+    *,
+    is_update: bool,
+    description: str,
+) -> str:
+    print(description)
+    if is_update and default is not None:
+        hint = f" [{default}]"
+    elif default is not None and default != "":
+        hint = f" [{default}]"
+    else:
+        hint = ""
+    line = input(f"{label}{hint}: ").strip()
+    if line == "" and is_update and default is not None:
+        return default
+    if line == "" and (not is_update) and default is not None:
+        return default
+    return line
+
+
+def prompt_choice(
+    label: str,
+    choices: tuple[str, ...],
+    default: str,
+    *,
+    is_update: bool,
+    current: str | None,
+    description: str,
+) -> str:
+    print(description)
+    if is_update and current is not None:
+        cur = current
+        line = input(f"{label} ({', '.join(choices)}) [{cur}]: ").strip()
+        if line == "":
+            return cur
+        if line in choices:
+            return line
+        sys.exit(f"Invalid value: choose one of {choices}")
+    line = input(f"{label} ({', '.join(choices)}) [{default}]: ").strip()
+    if line == "":
+        return default
+    if line in choices:
+        return line
+    sys.exit(f"Invalid value: choose one of {choices}")
+
+
+def loose_email_ok(s: str) -> bool:
+    return "@" in s and len(s) >= 3
+
+
+def https_owner_url_ok(s: str) -> bool:
+    p = urlparse(s)
+    return p.scheme == "https" and bool(p.netloc)
+
+
+OWNER_URL_HTTPS_NOTE = (
+    "Metaboost requires HTTPS; only https:// URLs are accepted (not http://)."
+)
+
+
+def build_signing_key(
+    *,
+    kid: str,
+    x: str,
+    status: str,
+    created_at: str,
+) -> dict[str, Any]:
+    return {
+        "kid": kid,
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "alg": "EdDSA",
+        "x": x,
+        "status": status,
+        "created_at": created_at,
+    }
+
+
+def run_validate(repo: Path) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        sys.exit("npm not found in PATH; install Node.js or use `nix develop`.")
+    r = subprocess.run([npm, "run", "validate:registry"], cwd=repo, check=False)
+    if r.returncode != 0:
+        sys.exit(r.returncode)
+
+
+def write_record(path: Path, data: dict[str, Any]) -> None:
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    path.write_text(text, encoding="utf-8")
+    print(f"Wrote {path}")
+
+
+def cmd_create(*, repo: Path, app_id: str) -> None:
+    out_path = repo / "registry" / "apps" / f"{app_id}.app.json"
+
+    ossl = openssl_bin()
+    check_openssl_ed25519(ossl)
+
+    kid_default = f"{app_id}-key-1"
+    print(
+        "Signing key id (kid): a stable string naming this key in the registry and when "
+        "you add more keys later (e.g. myapp-key-1). Use letters, digits, and hyphens."
+    )
+    kid = input(f"Signing key id (kid) [{kid_default}]: ").strip() or kid_default
+
+    idx = 0
+    priv = private_key_path(app_id, idx)
+    pub = public_key_path(app_id, idx)
+
+    if priv.exists():
+        print(
+            "Overwrite: answering y replaces the existing private key file at the path "
+            "below (the old key material will no longer be in that file)."
+        )
+        o = input(f"Private key already exists at {priv}. Overwrite? [y/N]: ").strip().lower()
+        if o != "y":
+            sys.exit("Aborted.")
+    print(f"Generating Ed25519 keypair under {keys_dir()} ...")
+    generate_keypair(ossl, priv, pub)
+
+    x = derive_x(ossl, priv)
+    t = now_utc()
+    sk = build_signing_key(
+        kid=kid,
+        x=x,
+        status="active",
+        created_at=t,
+    )
+
+    display_default = app_id.replace("-", " ").title()
+    display_name = prompt_line(
+        "Display name",
+        display_default,
+        is_update=False,
+        description=(
+            "Human-readable app name (string) for UIs and docs; any clear title is fine. "
+            "Press Enter to accept the default in brackets."
+        ),
+    )
+    owner_name = prompt_line(
+        "Owner name",
+        None,
+        is_update=False,
+        description=(
+            "Owner or team name (plain string) for the public owner field — not an email address."
+        ),
+    )
+    if not owner_name:
+        sys.exit("Owner name is required.")
+    owner_email = prompt_line(
+        "Owner email",
+        None,
+        is_update=False,
+        description="Public contact email (standard email format, e.g. security@example.com).",
+    )
+    if not owner_email or not loose_email_ok(owner_email):
+        sys.exit("A valid owner email is required.")
+    owner_url_raw = prompt_line(
+        "Owner URL",
+        "",
+        is_update=False,
+        description=(
+            "Optional owner website: full https:// URL including host. "
+            f"{OWNER_URL_HTTPS_NOTE} Leave empty if none."
+        ),
+    )
+    owner: dict[str, Any] = {"name": owner_name, "email": owner_email}
+    if owner_url_raw:
+        if not https_owner_url_ok(owner_url_raw):
+            sys.exit(
+                "Owner URL must be a full https:// URL with a host (http:// is not allowed). "
+                "Metaboost requires HTTPS."
+            )
+        owner["url"] = owner_url_raw
+
+    status = prompt_choice(
+        "App status",
+        APP_STATUSES,
+        "active",
+        is_update=False,
+        current=None,
+        description=(
+            "App-wide lifecycle: active (in use), suspended (paused), or revoked (do not trust)."
+        ),
+    )
+
+    record: dict[str, Any] = {
+        "app_id": app_id,
+        "display_name": display_name,
+        "owner": owner,
+        "status": status,
+        "signing_keys": [sk],
+        "created_at": t,
+        "updated_at": t,
+    }
+
+    write_record(out_path, record)
+    print("Running schema validation ...")
+    run_validate(repo)
+
+
+def cmd_update(*, repo: Path, app_id: str) -> None:
+    path = repo / "registry" / "apps" / f"{app_id}.app.json"
+    if not path.is_file():
+        sys.exit(f"No app record at {path}")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    created_at = data.get("created_at")
+    if not isinstance(created_at, str):
+        sys.exit("Invalid record: missing created_at")
+
+    ossl = openssl_bin()
+    check_openssl_ed25519(ossl)
+
+    display_name = prompt_line(
+        "Display name",
+        str(data.get("display_name", "")),
+        is_update=True,
+        description=(
+            "Human-readable app name (string). Press Enter with no input to keep the value in brackets."
+        ),
+    )
+    owner = data.get("owner")
+    if not isinstance(owner, dict):
+        sys.exit("Invalid record: owner must be an object")
+    owner_name = prompt_line(
+        "Owner name",
+        str(owner.get("name", "")),
+        is_update=True,
+        description=(
+            "Owner or team name (string). Press Enter to keep the value in brackets."
+        ),
+    )
+    owner_email = prompt_line(
+        "Owner email",
+        str(owner.get("email", "")),
+        is_update=True,
+        description=(
+            "Public contact email (standard email format). Press Enter to keep the value in brackets."
+        ),
+    )
+    cur_url = owner.get("url")
+    url_str = str(cur_url) if isinstance(cur_url, str) else ""
+    url_in = prompt_line(
+        "Owner URL (optional; '-' to remove)",
+        url_str,
+        is_update=True,
+        description=(
+            "Optional owner website: https:// URL with host only. "
+            f"{OWNER_URL_HTTPS_NOTE} Press Enter to keep; type a new https:// URL to replace; "
+            "type a single - to remove the URL field."
+        ),
+    )
+    new_owner: dict[str, Any] = {
+        "name": owner_name,
+        "email": owner_email,
+    }
+    if url_in == "-":
+        pass
+    elif url_in:
+        if not https_owner_url_ok(url_in):
+            sys.exit(
+                "Owner URL must be a full https:// URL with a host (http:// is not allowed). "
+                "Metaboost requires HTTPS."
+            )
+        new_owner["url"] = url_in
+    elif url_str:
+        if not https_owner_url_ok(url_str):
+            sys.exit(
+                "The stored owner URL is not https://. Metaboost requires HTTPS — enter an "
+                "https:// URL or remove the field with '-'."
+            )
+        new_owner["url"] = url_str
+
+    if not loose_email_ok(owner_email):
+        sys.exit("Owner email looks invalid.")
+
+    status = prompt_choice(
+        "App status",
+        APP_STATUSES,
+        str(data.get("status", "active")),
+        is_update=True,
+        current=str(data.get("status", "active")),
+        description=(
+            "App-wide lifecycle: active, suspended, or revoked. Press Enter to keep the value in brackets."
+        ),
+    )
+
+    keys = data.get("signing_keys")
+    if not isinstance(keys, list) or len(keys) < 1:
+        sys.exit("Invalid record: signing_keys must be a non-empty array")
+
+    print(
+        "Add a new signing key (key rotation)? "
+        "This generates a new Ed25519 keypair and appends to signing_keys."
+    )
+    rotate = input("Add new signing key? [y/N]: ").strip().lower() == "y"
+
+    if rotate:
+        idx = len(keys)
+        kid_default = f"{app_id}-key-{idx + 1}"
+        print(
+            "New signing key id (kid): a unique string for this additional key so it is "
+            "distinct from existing kids in signing_keys (e.g. myapp-key-2)."
+        )
+        kid = input(f"New signing key id (kid) [{kid_default}]: ").strip() or kid_default
+        priv = private_key_path(app_id, idx)
+        pub = public_key_path(app_id, idx)
+        print(f"Generating new Ed25519 keypair at {priv} ...")
+        generate_keypair(ossl, priv, pub)
+        x = derive_x(ossl, priv)
+        t = now_utc()
+        new_sk = build_signing_key(
+            kid=kid,
+            x=x,
+            status="active",
+            created_at=t,
+        )
+        keys = list(keys)
+        keys.append(new_sk)
+
+    updated: dict[str, Any] = {
+        **data,
+        "display_name": display_name,
+        "owner": new_owner,
+        "status": status,
+        "signing_keys": keys,
+        "created_at": created_at,
+        "updated_at": now_utc(),
+    }
+
+    write_record(path, updated)
+    print("Running schema validation ...")
+    run_validate(repo)
+
+
+def main() -> None:
+    if len(sys.argv) > 1:
+        sys.exit(
+            "Usage: ./scripts/registry-app\n"
+            "Run from the root of your metaboost-registry fork. "
+            "See docs/FIRST-APP-SUBMISSION.md."
+        )
+
+    repo = repo_root_from_script().resolve()
+    if not (repo / "schema" / "app-record.schema.json").is_file():
+        sys.exit(
+            f"Could not find schema at {repo / 'schema' / 'app-record.schema.json'}. "
+            "Run ./scripts/registry-app from inside your fork."
+        )
+
+    print(
+        "Application id (app_id): stable registry identifier; becomes <app_id>.app.json. "
+        "Lowercase letters, digits, hyphens only; length 3–64; pattern "
+        "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$."
+    )
+    app_id = input("app_id: ").strip()
+    if not app_id:
+        sys.exit("app_id is required.")
+    validate_app_id(app_id)
+
+    out_path = repo / "registry" / "apps" / f"{app_id}.app.json"
+    is_create = not out_path.exists()
+
+    if is_create:
+        cmd_create(repo=repo, app_id=app_id)
+    else:
+        cmd_update(repo=repo, app_id=app_id)
+
+
+if __name__ == "__main__":
+    main()
