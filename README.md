@@ -10,7 +10,8 @@ Public registry of app metadata and public signing keys for integrations that ca
 
 ## Repository Layout
 
-- `registry/apps/` - one app file per app (`<app_id>.app.json`)
+- `registry/apps/` - one app file per published app (`<app_id>.app.json`); this directory is what Metaboost and other hosts enumerate for the public app list
+- `registry/examples/` - non-published sample records (same schema) kept outside `registry/apps/` so they are not treated as real apps
 - `schema/app-record.schema.json` - JSON schema used to validate app files
 - `docs/SCHEMA.md` - schema reference and validation notes
 - `.github/workflows/validate-registry.yml` - required PR validation workflow
@@ -27,7 +28,7 @@ Each app file must include:
 - `created_at`
 - `updated_at`
 
-See `registry/apps/_example.app.json` and `docs/SCHEMA.md`.
+See `registry/examples/_example.app.json` and `docs/SCHEMA.md`.
 
 ## Contributor And Security Docs
 

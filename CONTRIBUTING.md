@@ -20,7 +20,7 @@ Required top-level fields:
 - `created_at`
 - `updated_at`
 
-For key details and examples, see `docs/SCHEMA.md` and `registry/apps/_example.app.json`.
+For key details and examples, see `docs/SCHEMA.md` and `registry/examples/_example.app.json`.
 
 ## Key Handling Rules
 

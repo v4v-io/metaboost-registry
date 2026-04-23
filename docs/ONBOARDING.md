@@ -16,7 +16,7 @@ Create:
 
 Use:
 
-- `registry/apps/_example.app.json`
+- `registry/examples/_example.app.json` (illustrative; not published alongside real apps)
 - `schema/app-record.schema.json`
 - `docs/SCHEMA.md`
 
