@@ -1,0 +1,23 @@
+{
+  "app_id": "podcastdj",
+  "display_name": "PodcastDJ",
+  "owner": {
+    "name": "Mitch Downey",
+    "email": "contact@podverse.fm",
+    "url": "https://podcastdj.com"
+  },
+  "status": "active",
+  "signing_keys": [
+    {
+      "kid": "podcastdj-key-1",
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "alg": "EdDSA",
+      "x": "nyQ38W5CsX65e5RbTZebrWGrHy1BwcrhoGoqpS1gBjo",
+      "status": "active",
+      "created_at": "2026-04-27T12:12:58Z"
+    }
+  ],
+  "created_at": "2026-04-27T12:12:58Z",
+  "updated_at": "2026-04-27T12:12:58Z"
+}
