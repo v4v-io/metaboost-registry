@@ -1,0 +1,23 @@
+{
+  "app_id": "v4v-io",
+  "display_name": "v4v.io",
+  "owner": {
+    "name": "Mitchell Downey",
+    "email": "contact@v4v.io",
+    "url": "https://v4v.io"
+  },
+  "status": "active",
+  "signing_keys": [
+    {
+      "kid": "v4v-io-key-1",
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "alg": "EdDSA",
+      "x": "jc2tU_0am6Bwvx6B_GTpRR9RTZHvN74xUBJ4WCdJ9OQ",
+      "status": "active",
+      "created_at": "2026-06-30T04:22:32Z"
+    }
+  ],
+  "created_at": "2026-06-30T04:22:32Z",
+  "updated_at": "2026-06-30T04:22:32Z"
+}
